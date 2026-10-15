@@ -1,6 +1,7 @@
 import os
 import time
 import sqlite3
+from typing import Optional
 import discord
 from dotenv import load_dotenv
 from discord import app_commands
@@ -14,14 +15,18 @@ CREATE TABLE IF NOT EXISTS counters (
     name                TEXT COLLATE NOCASE,
     started_at          INTEGER,
     last_culprit        TEXT,
-    record_days         INTEGER DEFAULT 0,
+    record_days         INTEGER DEFAULT 0,   -- legacy, no longer used
     last_streak_seconds INTEGER,
+    record_seconds      INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, name)
 )""")
-# Migrate databases created before last_streak_seconds existed
+# Migrate databases created before these columns existed
 _cols = [r[1] for r in db.execute("PRAGMA table_info(counters)")]
 if "last_streak_seconds" not in _cols:
     db.execute("ALTER TABLE counters ADD COLUMN last_streak_seconds INTEGER")
+if "record_seconds" not in _cols:
+    db.execute("ALTER TABLE counters ADD COLUMN record_seconds INTEGER DEFAULT 0")
+    db.execute("UPDATE counters SET record_seconds = COALESCE(record_days, 0) * 86400")
 db.commit()
 
 
@@ -60,10 +65,30 @@ def fmt(name: str, culprit: discord.abc.User, elapsed_seconds: int = 0) -> str:
 
 def get_counter(guild_id: int, name: str):
     return db.execute(
-        "SELECT name, started_at, record_days, last_streak_seconds FROM counters "
+        "SELECT name, started_at, record_seconds, last_streak_seconds FROM counters "
         "WHERE guild_id = ? AND name = ?",
         (guild_id, name),
     ).fetchone()
+
+
+def get_counter_details(guild_id: int, name: str):
+    return db.execute(
+        "SELECT name, started_at, last_culprit, record_seconds, last_streak_seconds "
+        "FROM counters WHERE guild_id = ? AND name = ?",
+        (guild_id, name),
+    ).fetchone()
+
+
+def join_lines(lines: list[str], limit: int = 1900) -> str:
+    """Join lines but stay under Discord's 2000-character message limit."""
+    out, used = [], 0
+    for i, line in enumerate(lines):
+        if used + len(line) + 1 > limit:
+            out.append(f"…and {len(lines) - i} more")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
 
 
 def reset_counter(guild_id: int, row, culprit: discord.abc.User) -> str:
@@ -73,14 +98,14 @@ def reset_counter(guild_id: int, row, culprit: discord.abc.User) -> str:
     # Capture everything we need from the old state BEFORE overwriting it
     now = int(time.time())
     elapsed_seconds = max(0, now - started_at)  # the streak that just ended
-    streak_days = elapsed_seconds // 86400
-    new_record = streak_days > record
+    record = record or 0
+    new_record = elapsed_seconds > record
+    record = max(record, elapsed_seconds)
 
     db.execute(
-        "UPDATE counters SET started_at = ?, last_culprit = ?, record_days = ?, "
+        "UPDATE counters SET started_at = ?, last_culprit = ?, record_seconds = ?, "
         "last_streak_seconds = ? WHERE guild_id = ? AND name = ?",
-        (now, culprit.display_name, max(record, streak_days), elapsed_seconds,
-         guild_id, stored_name),
+        (now, culprit.display_name, record, elapsed_seconds, guild_id, stored_name),
     )
     db.commit()
 
@@ -88,7 +113,9 @@ def reset_counter(guild_id: int, row, culprit: discord.abc.User) -> str:
     if previous_streak_seconds is not None:
         msg += f"\nPrevious streak: {format_duration(previous_streak_seconds)}"
     if new_record:
-        msg += "\n🏆 New record!"
+        msg += f"\n🏆 New record: {format_duration(record)}!"
+    elif record:
+        msg += f"\nRecord: {format_duration(record)}"
     return msg
 
 
@@ -206,6 +233,70 @@ async def break_counter(
         allowed_mentions=discord.AllowedMentions.none(),
     )
     view.original = interaction
+
+
+@bot.tree.command(name="list", description="Show all counters, or just one")
+@app_commands.describe(counter="Optional: show only this counter")
+@app_commands.autocomplete(counter=counter_autocomplete)
+@app_commands.guild_only()
+async def list_counters(interaction: discord.Interaction, counter: Optional[str] = None):
+    guild_id = interaction.guild_id
+    if guild_id is None:
+        await interaction.response.send_message(
+            "This command only works in a server.", ephemeral=True
+        )
+        return
+
+    no_pings = discord.AllowedMentions.none()
+    now = int(time.time())
+
+    # Single counter: show the details
+    if counter is not None:
+        name = normalize(counter)
+        row = get_counter_details(guild_id, name) if name else None
+        if not row:
+            await interaction.response.send_message(
+                f"No counter named **{name or counter}**.",
+                ephemeral=True,
+                allowed_mentions=no_pings,
+            )
+            return
+
+        stored_name, started_at, last_culprit, record, last_streak = row
+        lines = [f"**{format_duration(now - started_at)}** since last {stored_name} reference"]
+        if last_culprit:
+            lines.append(f"Last broken by {last_culprit}")
+        if last_streak is not None:
+            lines.append(f"Previous streak: {format_duration(last_streak)}")
+        record = max(record or 0, now - started_at)  # the running streak counts too
+        if record:
+            lines.append(f"Record: {format_duration(record)}")
+        await interaction.response.send_message("\n".join(lines), allowed_mentions=no_pings)
+        return
+
+    # No argument: list everything
+    rows = db.execute(
+        "SELECT name, started_at, last_culprit, record_seconds FROM counters "
+        "WHERE guild_id = ? ORDER BY name",
+        (guild_id,),
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message(
+            "No counters yet. Use `/break` to start one.", ephemeral=True
+        )
+        return
+
+    lines = []
+    for name, started_at, culprit, record in rows:
+        record = max(record or 0, now - started_at)  # the running streak counts too
+        details = []
+        if culprit:
+            details.append(f"last broken by {culprit}")
+        if record:
+            details.append(f"record {format_duration(record)}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        lines.append(f"**{name}**: {format_duration(now - started_at)}{suffix}")
+    await interaction.response.send_message(join_lines(lines), allowed_mentions=no_pings)
 
 
 bot.run(os.environ["DISCORD_TOKEN"])
