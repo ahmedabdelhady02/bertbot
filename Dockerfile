@@ -10,7 +10,7 @@ RUN useradd --create-home --uid 10001 bot \
     && mkdir /data \
     && chown bot:bot /data
 
-RUN pip install --no-cache-dir discord.py python-dotenv
+RUN pip install --no-cache-dir discord.py python-dotenv tzdata
 
 COPY bot.py config.py database.py utils.py ./
 COPY cogs/ ./cogs/

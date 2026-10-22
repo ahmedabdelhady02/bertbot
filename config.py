@@ -16,8 +16,8 @@ _test_guild_id = os.environ.get("TEST_GUILD_ID")
 TEST_GUILD = discord.Object(id=int(_test_guild_id)) if _test_guild_id else None
 
 # --- Social credit ---------------------------------------------------------
-# The "day" that gates the 1-use-per-day limit rolls over at midnight in this
-# timezone. Set CREDIT_TIMEZONE=America/New_York (or similar) in .env.
-CREDIT_TZ = ZoneInfo(os.environ.get("CREDIT_TIMEZONE", "UTC"))
+# Credit uses reset at midnight New York time (EST/EDT). Override with
+# CREDIT_TIMEZONE only when a different rollover timezone is intended.
+CREDIT_TZ = ZoneInfo(os.environ.get("CREDIT_TIMEZONE", "America/New_York"))
 CREDIT_COMMENT_MAX = 200
 LEADERBOARD_PAGE_SIZE = 10
