@@ -12,7 +12,7 @@ RUN useradd --create-home --uid 10001 bot \
 
 RUN pip install --no-cache-dir discord.py python-dotenv
 
-COPY bot.py config.py database.py dev.py utils.py ./
+COPY bot.py config.py database.py utils.py ./
 COPY cogs/ ./cogs/
 COPY services/ ./services/
 
