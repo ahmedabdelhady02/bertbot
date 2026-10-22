@@ -46,10 +46,10 @@ class LeaderboardView(discord.ui.View):
             self.guild_id, size, offset=self.page * size, lowest=self.lowest
         )
 
-        title = "**Social credit: lowest scores**" if self.lowest else "**Social credit leaderboard**"
+        title = "**Social Credit: Lowest Scores**" if self.lowest else "**Social Credit Leaderboard**"
         lines = [title]
-        for i, (user_id, score) in enumerate(rows, start=self.page * size + 1):
-            prefix = MEDALS.get(i, f"{i}.") if not self.lowest else f"{i}."
+        for user_id, score, rank in rows:
+            prefix = MEDALS.get(rank, f"{rank}.") if not self.lowest else f"{rank}."
             lines.append(f"{prefix} <@{user_id}>: **{score}**")
         lines.append(f"\nPage {self.page + 1}/{self.pages} · {total} user{'s' if total != 1 else ''}")
 

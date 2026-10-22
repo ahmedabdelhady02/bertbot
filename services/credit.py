@@ -116,16 +116,20 @@ def count_ranked(guild_id: int) -> int:
 
 def leaderboard(
     guild_id: int, limit: int, offset: int = 0, lowest: bool = False
-) -> list[tuple[int, int]]:
-    """Return one page of [(user_id, score), ...], best-first (or worst-first if lowest).
+) -> list[tuple[int, int, int]]:
+    """Return one page of [(user_id, score, rank), ...], best-first (or worst-first if lowest).
 
     Built from the vote ledger, so users with no votes never appear. A user
     whose votes net to 0 still shows up, since they've had credit added/subtracted.
+    Users with tied scores share the same rank.
     """
     direction = "ASC" if lowest else "DESC"  # fixed strings only, never user input
     return db.execute(
-        f"SELECT target_id, SUM(delta) AS score FROM credit_votes "
-        f"WHERE guild_id = ? GROUP BY target_id "
+        f"SELECT target_id, score, RANK() OVER (ORDER BY score {direction}) AS rank "
+        f"FROM ("
+        f"  SELECT target_id, SUM(delta) AS score FROM credit_votes "
+        f"  WHERE guild_id = ? GROUP BY target_id"
+        f") "
         f"ORDER BY score {direction}, target_id LIMIT ? OFFSET ?",
         (guild_id, limit, offset),
     ).fetchall()
