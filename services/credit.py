@@ -11,7 +11,7 @@ from database import db
 
 
 class AlreadyVoted(Exception):
-    """Raised when the giver has already used today's credit."""
+    """Raised when the voter has already used today's credit."""
 
     def __init__(self, resets_at: int):
         super().__init__("daily credit already used")
@@ -107,7 +107,7 @@ def get_rank(guild_id: int, user_id: int) -> int | None:
 
 
 def count_ranked(guild_id: int) -> int:
-    """Number of users who have ever had credit given or subtracted."""
+    """Number of users who have ever had credit added or subtracted."""
     return db.execute(
         "SELECT COUNT(DISTINCT target_id) FROM credit_votes WHERE guild_id = ?",
         (guild_id,),
@@ -120,7 +120,7 @@ def leaderboard(
     """Return one page of [(user_id, score), ...], best-first (or worst-first if lowest).
 
     Built from the vote ledger, so users with no votes never appear. A user
-    whose votes net to 0 still shows up, since they've had credit given/subtracted.
+    whose votes net to 0 still shows up, since they've had credit added/subtracted.
     """
     direction = "ASC" if lowest else "DESC"  # fixed strings only, never user input
     return db.execute(

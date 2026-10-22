@@ -1,5 +1,5 @@
 # FILE: cogs/credit.py  (put in the cogs/ folder)
-# Discord layer for social credit: /credit give, /credit subtract, /credit leaderboard
+# Discord layer for social credit: /credit add, /credit subtract, /credit leaderboard
 # (with paging buttons) and /credit view. No raw SQL here; it calls services/credit.py.
 
 import math
@@ -98,7 +98,7 @@ class Credit(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ---------------------------------------------------- give / subtract
+    # ----------------------------------------------------- add / subtract
     async def _cast(
         self,
         interaction: discord.Interaction,
@@ -115,7 +115,7 @@ class Credit(commands.Cog):
         # Validate BEFORE casting so a rejected attempt doesn't burn the daily use.
         if user.id == interaction.user.id:
             await interaction.response.send_message(
-                "You can't give or subtract social credit from yourself.", ephemeral=True
+                "You can't add or subtract social credit from yourself.", ephemeral=True
             )
             return
         if user.bot:
@@ -138,9 +138,9 @@ class Credit(commands.Cog):
             return
 
         if delta > 0:
-            msg = f"{interaction.user.mention} gave {user.mention} **+1** social credit."
+            msg = f"{interaction.user.mention} added **+1** social credit to {user.mention}."
         else:
-            msg = f"{interaction.user.mention} took **1** social credit from {user.mention}."
+            msg = f"{interaction.user.mention} subtracted **1** social credit from {user.mention}."
         if comment:
             msg += f"\n> {comment}"
         msg += f"\n{user.display_name}'s score: **{score}**"
@@ -150,13 +150,13 @@ class Credit(commands.Cog):
             msg, allowed_mentions=discord.AllowedMentions(users=[user])
         )
 
-    @credit.command(name="give", description="Give someone +1 social credit (1 use per day, shared with /credit subtract)")
-    @app_commands.describe(user="Who to give credit to", comment="Optional reason")
-    async def give(self, interaction: discord.Interaction, user: discord.Member, comment: Comment = None):
+    @credit.command(name="add", description="Add +1 social credit to someone (1 use per day, shared with /credit subtract)")
+    @app_commands.describe(user="Who should receive +1 social credit", comment="Optional reason")
+    async def add(self, interaction: discord.Interaction, user: discord.Member, comment: Comment = None):
         await self._cast(interaction, user, +1, comment)
 
-    @credit.command(name="subtract", description="Subtract 1 social credit from someone (1 use per day, shared with /credit give)")
-    @app_commands.describe(user="Who to subtract credit from", comment="Optional reason")
+    @credit.command(name="subtract", description="Subtract 1 social credit from someone (1 use per day, shared with /credit add)")
+    @app_commands.describe(user="Who should lose 1 social credit", comment="Optional reason")
     async def subtract(self, interaction: discord.Interaction, user: discord.Member, comment: Comment = None):
         await self._cast(interaction, user, -1, comment)
 
@@ -182,7 +182,7 @@ class Credit(commands.Cog):
             return
         if credit.count_ranked(guild_id) == 0:
             await interaction.response.send_message(
-                "No social credit has been given yet. Use `/credit give` or `/credit subtract` to start.",
+                "No social credit has been added yet. Use `/credit add` or `/credit subtract` to start.",
                 ephemeral=True,
             )
             return
@@ -215,12 +215,12 @@ class Credit(commands.Cog):
             return
 
         score, ups, downs = credit.get_summary(guild_id, target.id)
-        given, subtracted = credit.get_action_counts(guild_id, target.id)
+        added, subtracted = credit.get_action_counts(guild_id, target.id)
         rank = credit.get_rank(guild_id, target.id)
 
         lines = [f"**{target.display_name}**: **{score}** social credit"]
-        lines.append(f"Received: {ups} × +1, {downs} × -1")
-        lines.append(f"Given: {given} × +1, subtracted: {subtracted} × -1")
+        lines.append(f"Received: {ups} added, {downs} subtracted")
+        lines.append(f"Added: {added} × +1, subtracted: {subtracted} × -1")
         lines.append(f"Rank: #{rank}" if rank else "Rank: unranked (no votes yet)")
 
         comments = credit.recent_comments(guild_id, target.id)
