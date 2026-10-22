@@ -35,8 +35,8 @@ class LeaderboardView(discord.ui.View):
         self.pages = 1
         self.original: discord.Interaction | None = None
 
-    def render(self) -> str:
-        """Build the page text and sync button state. Re-queries so data stays fresh."""
+    def render(self) -> discord.Embed:
+        """Build the page embed and sync button state. Re-queries so data stays fresh."""
         size = config.LEADERBOARD_PAGE_SIZE
         total = credit.count_ranked(self.guild_id)
         self.pages = max(1, math.ceil(total / size))
@@ -46,16 +46,24 @@ class LeaderboardView(discord.ui.View):
             self.guild_id, size, offset=self.page * size, lowest=self.lowest
         )
 
-        title = "**Social Credit: Lowest Scores**" if self.lowest else "**Social Credit Leaderboard**"
-        lines = [title]
+        title = "Social Credit: Lowest Scores" if self.lowest else "Social Credit Leaderboard"
+        lines = []
         for user_id, score, rank in rows:
             prefix = MEDALS.get(rank, f"{rank}.") if not self.lowest else f"{rank}."
             lines.append(f"{prefix} <@{user_id}>: **{score}**")
-        lines.append(f"\nPage {self.page + 1}/{self.pages} · {total} user{'s' if total != 1 else ''}")
+
+        embed = discord.Embed(
+            title=title,
+            description=join_lines(lines),
+            color=discord.Color.red() if self.lowest else discord.Color.gold(),
+        )
+        embed.set_footer(
+            text=f"Page {self.page + 1}/{self.pages} · {total} user{'s' if total != 1 else ''}"
+        )
 
         self.prev_button.disabled = self.page <= 0
         self.next_button.disabled = self.page >= self.pages - 1
-        return join_lines(lines)
+        return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -69,14 +77,14 @@ class LeaderboardView(discord.ui.View):
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.page -= 1
         await interaction.response.edit_message(
-            content=self.render(), view=self, allowed_mentions=NO_PINGS
+            embed=self.render(), view=self, allowed_mentions=NO_PINGS
         )
 
     @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.page += 1
         await interaction.response.edit_message(
-            content=self.render(), view=self, allowed_mentions=NO_PINGS
+            embed=self.render(), view=self, allowed_mentions=NO_PINGS
         )
 
     async def on_timeout(self):
@@ -189,13 +197,13 @@ class Credit(commands.Cog):
 
         lowest = order is not None and order.value == "bottom"
         view = LeaderboardView(interaction.user.id, guild_id, lowest)
-        content = view.render()
+        embed = view.render()
 
         if view.pages <= 1:  # everything fits on one page, no buttons needed
-            await interaction.response.send_message(content, allowed_mentions=NO_PINGS)
+            await interaction.response.send_message(embed=embed, allowed_mentions=NO_PINGS)
             return
 
-        await interaction.response.send_message(content, view=view, allowed_mentions=NO_PINGS)
+        await interaction.response.send_message(embed=embed, view=view, allowed_mentions=NO_PINGS)
         view.original = interaction
 
     # ------------------------------------------------------------------ view
