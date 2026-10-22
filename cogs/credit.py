@@ -49,8 +49,9 @@ class LeaderboardView(discord.ui.View):
         title = "Social Credit: Lowest Scores" if self.lowest else "Social Credit Leaderboard"
         lines = []
         for user_id, score, rank in rows:
-            prefix = MEDALS.get(rank, f"{rank}.") if not self.lowest else f"{rank}."
-            lines.append(f"{prefix} <@{user_id}>: **{score}**")
+            medal = f" {MEDALS[rank]}" if not self.lowest and rank in MEDALS else ""
+            lines.append(f"**{rank}. <@{user_id}>**{medal}")
+            lines.append(f"> {score} credit")
 
         embed = discord.Embed(
             title=title,
