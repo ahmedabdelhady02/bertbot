@@ -89,28 +89,40 @@ def get_action_counts(guild_id: int, user_id: int) -> tuple[int, int]:
 
 
 def get_rank(guild_id: int, user_id: int) -> int | None:
-    """1-based rank by score, or None if the user has never received a vote."""
+    """1-based rank by score, or None if the user has never used the credit command."""
     if db.execute(
-        "SELECT 1 FROM credit_votes WHERE guild_id = ? AND target_id = ? LIMIT 1",
-        (guild_id, user_id),
+        "SELECT 1 FROM credit_votes "
+        "WHERE guild_id = ? AND (target_id = ? OR giver_id = ?) LIMIT 1",
+        (guild_id, user_id, user_id),
     ).fetchone() is None:
         return None
     score = get_score(guild_id, user_id)
     row = db.execute(
         "SELECT COUNT(*) + 1 FROM ("
-        "  SELECT SUM(delta) AS s FROM credit_votes WHERE guild_id = ? "
-        "  GROUP BY target_id"
+        "  SELECT participants.user_id, COALESCE(SUM(votes.delta), 0) AS s "
+        "  FROM ("
+        "    SELECT target_id AS user_id FROM credit_votes WHERE guild_id = ? "
+        "    UNION "
+        "    SELECT giver_id AS user_id FROM credit_votes WHERE guild_id = ?"
+        "  ) AS participants "
+        "  LEFT JOIN credit_votes AS votes "
+        "    ON votes.guild_id = ? AND votes.target_id = participants.user_id "
+        "  GROUP BY participants.user_id"
         ") WHERE s > ?",
-        (guild_id, score),
+        (guild_id, guild_id, guild_id, score),
     ).fetchone()
     return row[0]
 
 
 def count_ranked(guild_id: int) -> int:
-    """Number of users who have ever had credit added or subtracted."""
+    """Number of users who have ever used or received the credit command."""
     return db.execute(
-        "SELECT COUNT(DISTINCT target_id) FROM credit_votes WHERE guild_id = ?",
-        (guild_id,),
+        "SELECT COUNT(*) FROM ("
+        "  SELECT target_id AS user_id FROM credit_votes WHERE guild_id = ? "
+        "  UNION "
+        "  SELECT giver_id AS user_id FROM credit_votes WHERE guild_id = ?"
+        ")",
+        (guild_id, guild_id),
     ).fetchone()[0]
 
 
@@ -119,19 +131,25 @@ def leaderboard(
 ) -> list[tuple[int, int, int]]:
     """Return one page of [(user_id, score, rank), ...], best-first (or worst-first if lowest).
 
-    Built from the vote ledger, so users with no votes never appear. A user
-    whose votes net to 0 still shows up, since they've had credit added/subtracted.
-    Users with tied scores share the same rank.
+    Includes anyone who has cast or received a vote; givers with no received votes
+    have a score of 0. Users with tied scores share the same rank.
     """
     direction = "ASC" if lowest else "DESC"  # fixed strings only, never user input
     return db.execute(
-        f"SELECT target_id, score, RANK() OVER (ORDER BY score {direction}) AS rank "
+        f"SELECT user_id, score, RANK() OVER (ORDER BY score {direction}) AS rank "
         f"FROM ("
-        f"  SELECT target_id, SUM(delta) AS score FROM credit_votes "
-        f"  WHERE guild_id = ? GROUP BY target_id"
+        f"  SELECT participants.user_id, COALESCE(SUM(votes.delta), 0) AS score "
+        f"  FROM ("
+        f"    SELECT target_id AS user_id FROM credit_votes WHERE guild_id = ? "
+        f"    UNION "
+        f"    SELECT giver_id AS user_id FROM credit_votes WHERE guild_id = ?"
+        f"  ) AS participants "
+        f"  LEFT JOIN credit_votes AS votes "
+        f"    ON votes.guild_id = ? AND votes.target_id = participants.user_id "
+        f"  GROUP BY participants.user_id"
         f") "
-        f"ORDER BY score {direction}, target_id LIMIT ? OFFSET ?",
-        (guild_id, limit, offset),
+        f"ORDER BY score {direction}, user_id LIMIT ? OFFSET ?",
+        (guild_id, guild_id, guild_id, limit, offset),
     ).fetchall()
 
 
