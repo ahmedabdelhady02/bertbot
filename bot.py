@@ -1,302 +1,57 @@
-import os
-import time
-import sqlite3
-from typing import Optional
+"""Application entry point: configure the Discord bot and load its command cogs."""
+
 import discord
-from dotenv import load_dotenv
-from discord import app_commands
+from discord.ext import commands
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+import config
+import database
 
-db = sqlite3.connect("counters.db")
-db.execute("""
-CREATE TABLE IF NOT EXISTS counters (
-    guild_id            INTEGER,
-    name                TEXT COLLATE NOCASE,
-    started_at          INTEGER,
-    last_culprit        TEXT,
-    record_days         INTEGER DEFAULT 0,   -- legacy, no longer used
-    last_streak_seconds INTEGER,
-    record_seconds      INTEGER DEFAULT 0,
-    PRIMARY KEY (guild_id, name)
-)""")
-# Migrate databases created before these columns existed
-_cols = [r[1] for r in db.execute("PRAGMA table_info(counters)")]
-if "last_streak_seconds" not in _cols:
-    db.execute("ALTER TABLE counters ADD COLUMN last_streak_seconds INTEGER")
-if "record_seconds" not in _cols:
-    db.execute("ALTER TABLE counters ADD COLUMN record_seconds INTEGER DEFAULT 0")
-    db.execute("UPDATE counters SET record_seconds = COALESCE(record_days, 0) * 86400")
-db.commit()
+EXTENSIONS = [
+    "cogs.counters",
+    "cogs.credit",
+    "cogs.dev",  # only registers itself if TEST_GUILD_ID is set
+]
 
 
-def format_duration(total_seconds: int) -> str:
-    total_seconds = max(0, total_seconds)
-    days, rem = divmod(total_seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, seconds = divmod(rem, 60)
-
-    parts = []
-    if days:
-        parts.append(f"{days} day{'s' if days != 1 else ''}")
-    if hours:
-        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
-    if minutes:
-        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
-    if seconds or not parts:
-        parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
-    return ", ".join(parts)
-
-
-def normalize(raw: str) -> str:
-    """Collapse whitespace and drop a trailing 'reference' if the user typed it."""
-    name = " ".join(raw.split())
-    if name.lower().endswith(" reference"):
-        name = name[: -len(" reference")].strip()
-    return name
-
-
-def fmt(name: str, culprit: discord.abc.User, elapsed_seconds: int = 0) -> str:
-    return (
-        f"**{format_duration(elapsed_seconds)}** since last {name} reference, "
-        f"broken by {culprit.mention}"
-    )
-
-
-def get_counter(guild_id: int, name: str):
-    return db.execute(
-        "SELECT name, started_at, record_seconds, last_streak_seconds FROM counters "
-        "WHERE guild_id = ? AND name = ?",
-        (guild_id, name),
-    ).fetchone()
-
-
-def get_counter_details(guild_id: int, name: str):
-    return db.execute(
-        "SELECT name, started_at, last_culprit, record_seconds, last_streak_seconds "
-        "FROM counters WHERE guild_id = ? AND name = ?",
-        (guild_id, name),
-    ).fetchone()
-
-
-def join_lines(lines: list[str], limit: int = 1900) -> str:
-    """Join lines but stay under Discord's 2000-character message limit."""
-    out, used = [], 0
-    for i, line in enumerate(lines):
-        if used + len(line) + 1 > limit:
-            out.append(f"…and {len(lines) - i} more")
-            break
-        out.append(line)
-        used += len(line) + 1
-    return "\n".join(out)
-
-
-def reset_counter(guild_id: int, row, culprit: discord.abc.User) -> str:
-    """Reset an existing counter and return the public message."""
-    stored_name, started_at, record, previous_streak_seconds = row
-
-    # Capture everything we need from the old state BEFORE overwriting it
-    now = int(time.time())
-    elapsed_seconds = max(0, now - started_at)  # the streak that just ended
-    record = record or 0
-    new_record = elapsed_seconds > record
-    record = max(record, elapsed_seconds)
-
-    db.execute(
-        "UPDATE counters SET started_at = ?, last_culprit = ?, record_seconds = ?, "
-        "last_streak_seconds = ? WHERE guild_id = ? AND name = ?",
-        (now, culprit.display_name, record, elapsed_seconds, guild_id, stored_name),
-    )
-    db.commit()
-
-    msg = fmt(stored_name, culprit, elapsed_seconds)
-    if previous_streak_seconds is not None:
-        msg += f"\nPrevious streak: {format_duration(previous_streak_seconds)}"
-    if new_record:
-        msg += f"\n🏆 New record: {format_duration(record)}!"
-    elif record:
-        msg += f"\nRecord: {format_duration(record)}"
-    return msg
-
-
-class ConfirmNew(discord.ui.View):
-    def __init__(self, user_id: int, guild_id: int, name: str, culprit: discord.Member):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.guild_id = guild_id
-        self.name = name
-        self.culprit = culprit
-        self.original: discord.Interaction | None = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user_id
-
-    @discord.ui.button(label="Yes, start it", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.stop()
-        # Someone may have created it while the prompt was open
-        existing = get_counter(self.guild_id, self.name)
-        if existing:
-            public = reset_counter(self.guild_id, existing, self.culprit)
-        else:
-            db.execute(
-                "INSERT INTO counters (guild_id, name, started_at, last_culprit) "
-                "VALUES (?, ?, ?, ?)",
-                (self.guild_id, self.name, int(time.time()), self.culprit.display_name),
-            )
-            db.commit()
-            public = fmt(self.name, self.culprit, 0)
-
-        await interaction.response.edit_message(content="Done!", view=None)
-        await interaction.followup.send(public, ephemeral=False)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.stop()
-        await interaction.response.edit_message(content="Cancelled, nothing was created.", view=None)
-
-    async def on_timeout(self):
-        if self.original:
-            try:
-                await self.original.edit_original_response(
-                    content="Timed out, nothing was created.", view=None
-                )
-            except discord.HTTPException:
-                pass
-
-
-class CounterBot(discord.Client):
+class Bot(commands.Bot):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())
-        self.tree = app_commands.CommandTree(self)
+        super().__init__(
+            command_prefix=commands.when_mentioned,  # slash commands only
+            intents=discord.Intents.default(),
+            help_command=None,
+        )
 
-    # async def setup_hook(self):
-    #     await self.tree.sync()
     async def setup_hook(self):
-        test_guild = os.environ.get("TEST_GUILD_ID")
-        if test_guild:
-            guild = discord.Object(id=int(test_guild))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
+        # Each cog owns one feature's Discord commands and is loaded as an extension.
+        for ext in EXTENSIONS:
+            await self.load_extension(ext)
+
+        # Global commands: every server the bot is in
+        synced = await self.tree.sync()
+        print(f"Synced {len(synced)} global commands", flush=True)
+
+        # Test-only commands: just the test server
+        if config.TEST_GUILD:
+            synced = await self.tree.sync(guild=config.TEST_GUILD)
+            print(f"Synced {len(synced)} test-only commands to guild {config.TEST_GUILD.id}", flush=True)
+
+    async def on_ready(self):
+        print(f"Logged in as {self.user} (application id {self.application_id})", flush=True)
+        for g in self.guilds:
+            print(f"In guild: {g.name} ({g.id})", flush=True)
+        print("Global commands:", [c.name for c in await self.tree.fetch_commands()], flush=True)
+        if config.TEST_GUILD:
+            print("Test guild commands:",
+                  [c.name for c in await self.tree.fetch_commands(guild=config.TEST_GUILD)], flush=True)
 
 
-bot = CounterBot()
+def main():
+    if not config.DISCORD_TOKEN:
+        raise SystemExit("DISCORD_TOKEN is not set (check your .env)")
+    # Ensure tables and migrations are ready before any commands can use the DB.
+    database.init_schema()
+    Bot().run(config.DISCORD_TOKEN)
 
 
-async def counter_autocomplete(interaction: discord.Interaction, current: str):
-    rows = db.execute(
-        "SELECT name FROM counters WHERE guild_id = ? AND name LIKE ? "
-        "ORDER BY name LIMIT 25",
-        (interaction.guild_id, f"%{normalize(current)}%"),
-    ).fetchall()
-    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows]
-
-
-@bot.tree.command(name="break", description="Break a 'days since last ... reference' counter")
-@app_commands.describe(
-    counter="The thing that was referenced (pick one or type a new one)",
-    culprit="Who broke it",
-)
-@app_commands.autocomplete(counter=counter_autocomplete)
-@app_commands.guild_only()
-async def break_counter(
-    interaction: discord.Interaction,
-    counter: app_commands.Range[str, 1, 60],
-    culprit: discord.Member,
-):
-    guild_id = interaction.guild_id
-    if guild_id is None:
-        await interaction.response.send_message(
-            "This command only works in a server.", ephemeral=True
-        )
-        return
-
-    name = normalize(counter)
-    if not name:
-        await interaction.response.send_message("Counter name can't be empty.", ephemeral=True)
-        return
-
-    row = get_counter(guild_id, name)
-    if row:
-        await interaction.response.send_message(
-            reset_counter(guild_id, row, culprit)
-        )
-        return
-
-    view = ConfirmNew(interaction.user.id, guild_id, name, culprit)
-    await interaction.response.send_message(
-        f"There's no **{name}** counter yet. Start a new one at 0 days, broken by {culprit.mention}?",
-        view=view,
-        ephemeral=True,
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
-    view.original = interaction
-
-
-@bot.tree.command(name="list", description="Show all counters, or just one")
-@app_commands.describe(counter="Optional: show only this counter")
-@app_commands.autocomplete(counter=counter_autocomplete)
-@app_commands.guild_only()
-async def list_counters(interaction: discord.Interaction, counter: Optional[str] = None):
-    guild_id = interaction.guild_id
-    if guild_id is None:
-        await interaction.response.send_message(
-            "This command only works in a server.", ephemeral=True
-        )
-        return
-
-    no_pings = discord.AllowedMentions.none()
-    now = int(time.time())
-
-    # Single counter: show the details
-    if counter is not None:
-        name = normalize(counter)
-        row = get_counter_details(guild_id, name) if name else None
-        if not row:
-            await interaction.response.send_message(
-                f"No counter named **{name or counter}**.",
-                ephemeral=True,
-                allowed_mentions=no_pings,
-            )
-            return
-
-        stored_name, started_at, last_culprit, record, last_streak = row
-        lines = [f"**{format_duration(now - started_at)}** since last {stored_name} reference"]
-        if last_culprit:
-            lines.append(f"Last broken by {last_culprit}")
-        if last_streak is not None:
-            lines.append(f"Previous streak: {format_duration(last_streak)}")
-        record = max(record or 0, now - started_at)  # the running streak counts too
-        if record:
-            lines.append(f"Record: {format_duration(record)}")
-        await interaction.response.send_message("\n".join(lines), allowed_mentions=no_pings)
-        return
-
-    # No argument: list everything
-    rows = db.execute(
-        "SELECT name, started_at, last_culprit, record_seconds FROM counters "
-        "WHERE guild_id = ? ORDER BY name",
-        (guild_id,),
-    ).fetchall()
-    if not rows:
-        await interaction.response.send_message(
-            "No counters yet. Use `/break` to start one.", ephemeral=True
-        )
-        return
-
-    lines = []
-    for name, started_at, culprit, record in rows:
-        record = max(record or 0, now - started_at)  # the running streak counts too
-        details = []
-        if culprit:
-            details.append(f"last broken by {culprit}")
-        if record:
-            details.append(f"record {format_duration(record)}")
-        suffix = f" ({', '.join(details)})" if details else ""
-        lines.append(f"**{name}**: {format_duration(now - started_at)}{suffix}")
-    await interaction.response.send_message(join_lines(lines), allowed_mentions=no_pings)
-
-
-bot.run(os.environ["DISCORD_TOKEN"])
+if __name__ == "__main__":
+    main()
