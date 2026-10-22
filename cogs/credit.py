@@ -50,7 +50,7 @@ class LeaderboardView(discord.ui.View):
         lines = []
         for user_id, score, rank in rows:
             medal = f" {MEDALS[rank]}" if not self.lowest and rank in MEDALS else ""
-            lines.append(f"**{rank}. <@{user_id}>**{medal}\n> {score} credit")
+            lines.append(f"**{rank}.** <@{user_id}>{medal}\n> **{score}** credit")
 
         embed = discord.Embed(
             title=title,
